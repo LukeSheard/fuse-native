@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [20, 22]
+
+    runs-on: ${{ matrix.os }}
+    name: Test on ${{ matrix.os }} (Node ${{ matrix.node-version }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FUSE (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse-dev fuse3
+
+      - name: Install macFUSE (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask macfuse
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm test
