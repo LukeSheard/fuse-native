@@ -10,8 +10,8 @@
     "conditions": [
       ["OS=='mac'", {
         "variables": {
-          "fuse__include_dirs%": "<!(pkg-config fuse3 --cflags-only-I 2>/dev/null | sed s/-I//g)",
-          "fuse__libraries%": "<!(pkg-config fuse3 --libs-only-L --libs-only-l 2>/dev/null)"
+          "fuse__include_dirs%": "<!(pkg-config fuse --cflags-only-I 2>/dev/null | sed s/-I//g)",
+          "fuse__libraries%": "<!(pkg-config fuse --libs-only-L --libs-only-l 2>/dev/null)"
         },
         "include_dirs": [
           "<@(fuse__include_dirs)"
@@ -19,7 +19,7 @@
         "link_settings": {
           "libraries": ["<@(fuse__libraries)"]
         },
-        "defines": ["FUSE_USE_VERSION=35", "_FILE_OFFSET_BITS=64"],
+        "defines": ["_FILE_OFFSET_BITS=64"],
         "xcode_settings": {
           "OTHER_CFLAGS": [
             "-g",
@@ -43,7 +43,6 @@
         "link_settings": {
           "libraries": ["<@(fuse__libraries)"]
         },
-        "defines": ["FUSE_USE_VERSION=35"],
         "cflags": [
           "-g",
           "-O3",

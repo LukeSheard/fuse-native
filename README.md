@@ -12,7 +12,7 @@ Upstream: [https://github.com/fuse\-friends/fuse\-native](https://github.com/fus
 
 ## Prerequisites
 
-This library requires libfuse3 to be installed on your system.
+This library requires FUSE to be installed on your system.
 
 ### Linux
 
@@ -31,9 +31,9 @@ sudo pacman -S fuse3
 
 ### macOS
 
-Install macFUSE 4.10+ (which includes libfuse3 support):
+Install macFUSE:
 
-1. Download and install [macFUSE](https://osxfuse.github.io/) version 4.10 or later
+1. Download and install [macFUSE](https://osxfuse.github.io/) version 4.x or later
 2. macFUSE 5.x is recommended for best compatibility
 
 Alternatively, using Homebrew:
@@ -42,6 +42,8 @@ brew install macfuse
 ```
 
 **Note:** You may need to allow the macFUSE kernel extension in System Preferences > Security & Privacy after installation.
+
+**Note:** macFUSE provides a FUSE 2.9-compatible API. This library automatically uses FUSE 2.9 on macOS and FUSE 3 on Linux.
 
 ### TESTING
 
@@ -58,7 +60,7 @@ pnpm test
 - Upstream seems dead \-\- [https://github.com/fuse\-friends/fuse\-native/issues/36](https://github.com/fuse-friends/fuse-native/issues/36) 
 - On ARM64 linux upstream doesn't install, due to the shared library binary that they ship, which is wrong.  That's the reason I removed all use of shipping shared libraries in an npm module, which is really the wrong way to do things, obviously.
 - I added the `nonEmpty` option, which wasn't in upstream.
-- **FUSE 3 Migration**: This fork has been updated to use FUSE 3 API (FUSE\_USE\_VERSION=35) for compatibility with modern FUSE implementations including macFUSE 4.10+ and libfuse3 on Linux.
+- **Platform-specific FUSE support**: This fork uses FUSE 3 API on Linux (libfuse3) and FUSE 2.9 API on macOS (macFUSE). The code automatically selects the correct API based on the platform.
 
 ## API
 

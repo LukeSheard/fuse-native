@@ -1,4 +1,10 @@
-#define FUSE_USE_VERSION 35
+// Platform-specific FUSE version selection
+// macFUSE provides FUSE 2.9 compatible API, Linux uses FUSE 3
+#ifdef __APPLE__
+  #define FUSE_USE_VERSION 29
+#else
+  #define FUSE_USE_VERSION 35
+#endif
 
 #include <uv.h>
 #include <node_api.h>
@@ -17,18 +23,6 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <pthread.h>
-
-// Platform-specific type definitions for macFUSE compatibility
-#ifdef __APPLE__
-  // macFUSE uses different types than Linux libfuse3
-  typedef struct stat fuse_stat_t;
-  typedef struct statfs fuse_statfs_t;
-  #define FUSE_FILL_DIR_T fuse_fill_dir_t
-#else
-  typedef struct stat fuse_stat_t;
-  typedef struct statvfs fuse_statfs_t;
-  #define FUSE_FILL_DIR_T fuse_fill_dir_t
-#endif
 
 static int IS_ARRAY_BUFFER_DETACH_SUPPORTED = 0;
 
@@ -138,6 +132,9 @@ typedef struct {
   napi_ref handlers[35];
 
   struct fuse *fuse;
+#ifdef __APPLE__
+  struct fuse_chan *ch;  // FUSE 2.9 requires channel
+#endif
   char mnt[1024];
   char mntopts[1024];
   int mounted;
@@ -180,11 +177,7 @@ typedef struct {
 
   // Stat + Statfs
   struct stat *stat;
-#ifdef __APPLE__
-  struct statfs *statfs_buf;
-#else
   struct statvfs *statvfs;
-#endif
 
   // Readdir
   fuse_fill_dir_t readdir_filler;
@@ -241,23 +234,6 @@ static void populate_stat (uint32_t *ints, struct stat* stat) {
 #endif
 }
 
-#ifdef __APPLE__
-static void populate_statfs (uint32_t *ints, struct statfs* st) {
-  st->f_bsize = *ints++;
-  *ints++; // skip frsize (not in macOS statfs)
-  st->f_blocks = *ints++;
-  st->f_bfree = *ints++;
-  st->f_bavail = *ints++;
-  st->f_files = *ints++;
-  st->f_ffree = *ints++;
-  *ints++; // skip favail (not in macOS statfs)
-  // f_fsid is a struct on macOS, just skip it
-  *ints++;
-  st->f_flags = *ints++;
-  // f_namemax doesn't exist in macOS statfs, skip
-  *ints++;
-}
-#else
 static void populate_statvfs (uint32_t *ints, struct statvfs* statvfs) {
   statvfs->f_bsize = *ints++;
   statvfs->f_frsize = *ints++;
@@ -271,21 +247,9 @@ static void populate_statvfs (uint32_t *ints, struct statvfs* statvfs) {
   statvfs->f_flag = *ints++;
   statvfs->f_namemax = *ints++;
 }
-#endif
 
 // Methods
 
-#ifdef __APPLE__
-FUSE_METHOD(statfs, 1, 1, (const char * path, struct statfs *statfs_buf), {
-  l->path = path;
-  l->statfs_buf = statfs_buf;
-}, {
-  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
-}, {
-  NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
-  populate_statfs(ints, l->statfs_buf);
-})
-#else
 FUSE_METHOD(statfs, 1, 1, (const char * path, struct statvfs *statvfs), {
   l->path = path;
   l->statvfs = statvfs;
@@ -295,8 +259,20 @@ FUSE_METHOD(statfs, 1, 1, (const char * path, struct statvfs *statvfs), {
   NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
   populate_statvfs(ints, l->statvfs);
 })
-#endif
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat), {
+  l->path = path;
+  l->stat = stat;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+}, {
+  NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
+  populate_stat(ints, l->stat);
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat, struct fuse_file_info *info), {
   l->path = path;
   l->stat = stat;
@@ -307,6 +283,7 @@ FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat, struct fuse_fil
   NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
   populate_stat(ints, l->stat);
 })
+#endif
 
 FUSE_METHOD(fgetattr, 2, 1, (const char *path, struct stat *stat, struct fuse_file_info *info), {
   l->path = path;
@@ -382,6 +359,19 @@ FUSE_METHOD(create, 2, 1, (const char *path, mode_t mode, struct fuse_file_info 
   }
 })
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD_VOID(utimens, 5, 0, (const char *path, const struct timespec tv[2]), {
+  l->path = path;
+  l->atime = timespec_to_uint64(&tv[0]);
+  l->mtime = timespec_to_uint64(&tv[1]);
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+  FUSE_UINT64_TO_INTS_ARGV(l->atime, 3)
+  FUSE_UINT64_TO_INTS_ARGV(l->atime, 5)
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD_VOID(utimens, 5, 0, (const char *path, const struct timespec tv[2], struct fuse_file_info *info), {
   l->path = path;
   l->atime = timespec_to_uint64(&tv[0]);
@@ -392,6 +382,7 @@ FUSE_METHOD_VOID(utimens, 5, 0, (const char *path, const struct timespec tv[2], 
   FUSE_UINT64_TO_INTS_ARGV(l->atime, 3)
   FUSE_UINT64_TO_INTS_ARGV(l->atime, 5)
 })
+#endif
 
 FUSE_METHOD_VOID(release, 2, 0, (const char *path, struct fuse_file_info *info), {
   l->path = path;
@@ -449,6 +440,19 @@ FUSE_METHOD(write, 6, 2, (const char *path, const char *buf, size_t len, off_t o
   if (IS_ARRAY_BUFFER_DETACH_SUPPORTED == 1) assert(napi_detach_arraybuffer(env, argv[3]) == napi_ok);
 })
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info), {
+  l->buf = buf;
+  l->path = path;
+  l->offset = offset;
+  l->info = info;
+  l->readdir_filler = filler;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+}, {
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info, enum fuse_readdir_flags flags), {
   (void)flags; // Unused but required by FUSE 3 API
   l->buf = buf;
@@ -459,6 +463,7 @@ FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler,
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
 }, {
+#endif
   uint32_t stats_length;
   uint32_t names_length;
   napi_get_array_length(env, argv[3], &stats_length);
@@ -470,7 +475,13 @@ FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler,
   if (names_length != stats_length) {
     NAPI_FOR_EACH(raw_names, raw_name) {
       NAPI_UTF8(name, 1024, raw_name)
+#ifdef __APPLE__
+      // FUSE 2.9: filler takes 4 arguments
+      int err = l->readdir_filler((char *) l->buf, name, NULL, 0);
+#else
+      // FUSE 3: filler takes 5 arguments (extra flags parameter)
       int err = l->readdir_filler((char *) l->buf, name, NULL, 0, 0);
+#endif
       if (err == 1) {
         break;
       }
@@ -485,8 +496,13 @@ FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler,
       struct stat st;
       populate_stat(stats_array, &st);
 
-      // FUSE 3: filler has an extra flags parameter
+#ifdef __APPLE__
+      // FUSE 2.9: filler takes 4 arguments
+      int err = l->readdir_filler((char *) l->buf, name, (struct stat *) &st, 0);
+#else
+      // FUSE 3: filler takes 5 arguments (extra flags parameter)
       int err = l->readdir_filler((char *) l->buf, name, (struct stat *) &st, 0, 0);
+#endif
       if (err == 1) {
         break;
       }
@@ -622,6 +638,17 @@ FUSE_METHOD_VOID(fsyncdir, 3, 0, (const char *path, int datasync, struct fuse_fi
 })
 
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD_VOID(truncate, 3, 0, (const char *path, off_t size), {
+  l->path = path;
+  l->offset = size;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+  FUSE_UINT64_TO_INTS_ARGV(l->offset, 3)
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD_VOID(truncate, 3, 0, (const char *path, off_t size, struct fuse_file_info *info), {
   l->path = path;
   l->offset = size;
@@ -630,6 +657,7 @@ FUSE_METHOD_VOID(truncate, 3, 0, (const char *path, off_t size, struct fuse_file
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   FUSE_UINT64_TO_INTS_ARGV(l->offset, 3)
 })
+#endif
 
 FUSE_METHOD_VOID(ftruncate, 4, 0, (const char *path, off_t size, struct fuse_file_info *info), {
   l->path = path;
@@ -656,6 +684,19 @@ FUSE_METHOD(readlink, 1, 1, (const char *path, char *linkname, size_t len), {
   strncpy(l->linkname, linkname, l->len);
 })
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD_VOID(chown, 3, 0, (const char *path, uid_t uid, gid_t gid), {
+  l->path = path;
+  l->uid = uid;
+  l->gid = gid;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+  napi_create_uint32(env, l->uid, &(argv[3]));
+  napi_create_uint32(env, l->gid, &(argv[4]));
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD_VOID(chown, 3, 0, (const char *path, uid_t uid, gid_t gid, struct fuse_file_info *info), {
   l->path = path;
   l->uid = uid;
@@ -666,7 +707,19 @@ FUSE_METHOD_VOID(chown, 3, 0, (const char *path, uid_t uid, gid_t gid, struct fu
   napi_create_uint32(env, l->uid, &(argv[3]));
   napi_create_uint32(env, l->gid, &(argv[4]));
 })
+#endif
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD_VOID(chmod, 2, 0, (const char *path, mode_t mode), {
+  l->path = path;
+  l->mode = mode;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+  napi_create_uint32(env, l->mode, &(argv[3]));
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD_VOID(chmod, 2, 0, (const char *path, mode_t mode, struct fuse_file_info *info), {
   l->path = path;
   l->mode = mode;
@@ -675,6 +728,7 @@ FUSE_METHOD_VOID(chmod, 2, 0, (const char *path, mode_t mode, struct fuse_file_i
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   napi_create_uint32(env, l->mode, &(argv[3]));
 })
+#endif
 
 FUSE_METHOD_VOID(mknod, 3, 0, (const char *path, mode_t mode, dev_t dev), {
   l->path = path;
@@ -692,6 +746,17 @@ FUSE_METHOD_VOID(unlink, 1, 0, (const char *path), {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
 })
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+FUSE_METHOD_VOID(rename, 2, 0, (const char *path, const char *dest), {
+  l->path = path;
+  l->dest = dest;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+  napi_create_string_utf8(env, l->dest, NAPI_AUTO_LENGTH, &(argv[3]));
+})
+#else
+// FUSE 3 API for Linux
 FUSE_METHOD_VOID(rename, 2, 0, (const char *path, const char *dest, unsigned int flags), {
   l->path = path;
   l->dest = dest;
@@ -700,6 +765,7 @@ FUSE_METHOD_VOID(rename, 2, 0, (const char *path, const char *dest, unsigned int
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   napi_create_string_utf8(env, l->dest, NAPI_AUTO_LENGTH, &(argv[3]));
 })
+#endif
 
 FUSE_METHOD_VOID(link, 2, 0, (const char *path, const char *dest), {
   l->path = path;
@@ -751,6 +817,21 @@ NAPI_METHOD(fuse_native_signal_init) {
   return NULL;
 }
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+static void * fuse_native_init (struct fuse_conn_info *conn) {
+  fuse_thread_locals_t *l = get_thread_locals();
+
+  l->op = op_init;
+  l->op_fn = fuse_native_dispatch_init;
+
+  uv_async_send(&(l->async));
+  uv_sem_wait(&(l->sem));
+
+  return l->fuse;
+}
+#else
+// FUSE 3 API for Linux
 static void * fuse_native_init (struct fuse_conn_info *conn, struct fuse_config *cfg) {
   (void)cfg; // Unused but required by FUSE 3 API
   fuse_thread_locals_t *l = get_thread_locals();
@@ -763,6 +844,7 @@ static void * fuse_native_init (struct fuse_conn_info *conn, struct fuse_config 
 
   return l->fuse;
 }
+#endif
 
 // Top-level dispatcher
 
@@ -831,6 +913,20 @@ static fuse_thread_locals_t* get_thread_locals () {
   return l;
 }
 
+#ifdef __APPLE__
+// FUSE 2.9 API for macOS
+static void* start_fuse_thread (void *data) {
+  fuse_thread_t *ft = (fuse_thread_t *) data;
+  fuse_loop_mt(ft->fuse);
+
+  fuse_unmount(ft->mnt, ft->ch);
+  fuse_session_remove_chan(ft->ch);
+  fuse_destroy(ft->fuse);
+
+  return NULL;
+}
+#else
+// FUSE 3 API for Linux
 static void* start_fuse_thread (void *data) {
   fuse_thread_t *ft = (fuse_thread_t *) data;
 
@@ -847,6 +943,7 @@ static void* start_fuse_thread (void *data) {
 
   return NULL;
 }
+#endif
 
 NAPI_METHOD(fuse_native_mount) {
   NAPI_ARGV(7)
@@ -871,24 +968,22 @@ NAPI_METHOD(fuse_native_mount) {
 
   struct fuse_operations ops = { };
   if (implemented[op_access]) ops.access = fuse_native_access;
+#ifdef __APPLE__
+  // FUSE 2.9: truncate and ftruncate are separate
+  if (implemented[op_truncate]) ops.truncate = fuse_native_truncate;
+  if (implemented[op_ftruncate]) ops.ftruncate = fuse_native_ftruncate;
+  if (implemented[op_getattr]) ops.getattr = fuse_native_getattr;
+  if (implemented[op_fgetattr]) ops.fgetattr = fuse_native_fgetattr;
+#else
   // FUSE 3: ftruncate is merged into truncate (info param is non-NULL for fd-based)
   if (implemented[op_truncate] || implemented[op_ftruncate]) ops.truncate = fuse_native_truncate;
   // FUSE 3: fgetattr is merged into getattr (info param is non-NULL for fstat)
-#ifdef __APPLE__
-  // macFUSE uses different types, cast for compatibility
-  if (implemented[op_getattr] || implemented[op_fgetattr]) ops.getattr = (typeof(ops.getattr))fuse_native_getattr;
-#else
   if (implemented[op_getattr] || implemented[op_fgetattr]) ops.getattr = fuse_native_getattr;
 #endif
   if (implemented[op_flush]) ops.flush = fuse_native_flush;
   if (implemented[op_fsync]) ops.fsync = fuse_native_fsync;
   if (implemented[op_fsyncdir]) ops.fsyncdir = fuse_native_fsyncdir;
-#ifdef __APPLE__
-  // macFUSE uses fuse_darwin_fill_dir_t, cast for compatibility
-  if (implemented[op_readdir]) ops.readdir = (typeof(ops.readdir))fuse_native_readdir;
-#else
   if (implemented[op_readdir]) ops.readdir = fuse_native_readdir;
-#endif
   if (implemented[op_readlink]) ops.readlink = fuse_native_readlink;
   if (implemented[op_chown]) ops.chown = fuse_native_chown;
   if (implemented[op_chmod]) ops.chmod = fuse_native_chmod;
@@ -922,7 +1017,42 @@ NAPI_METHOD(fuse_native_mount) {
 
   struct fuse_args args = FUSE_ARGS_INIT(_argc, _argv);
 
-  // FUSE 3: Create fuse first, then mount
+#ifdef __APPLE__
+  // FUSE 2.9 API for macOS: mount first, then create fuse
+  struct fuse_chan *ch = fuse_mount(mnt, &args);
+
+  if (ch == NULL) {
+    napi_throw_error(env, "fuse failed", "fuse_mount failed");
+    return NULL;
+  }
+
+  struct fuse *fuse = fuse_new(ch, &args, &ops, sizeof(struct fuse_operations), ft);
+
+  if (fuse == NULL) {
+    fuse_unmount(mnt, ch);
+    napi_throw_error(env, "fuse failed", "fuse_new failed");
+    return NULL;
+  }
+
+  uv_mutex_init(&(ft->mut));
+  uv_sem_init(&(ft->sem), 0);
+
+  strncpy(ft->mnt, mnt, 1024);
+  strncpy(ft->mntopts, mntopts, 1024);
+  ft->fuse = fuse;
+  ft->ch = ch;
+  ft->mounted++;
+
+  int err = uv_async_init(uv_default_loop(), &(ft->async), (uv_async_cb) fuse_native_async_init);
+
+  if (err < 0) {
+    fuse_unmount(mnt, ch);
+    fuse_destroy(fuse);
+    napi_throw_error(env, "fuse failed", "uv_async_init failed");
+    return NULL;
+  }
+#else
+  // FUSE 3 API for Linux: create fuse first, then mount
   struct fuse *fuse = fuse_new(&args, &ops, sizeof(struct fuse_operations), ft);
 
   if (fuse == NULL) {
@@ -953,6 +1083,7 @@ NAPI_METHOD(fuse_native_mount) {
     napi_throw_error(env, "fuse failed", "uv_async_init failed");
     return NULL;
   }
+#endif
 
   pthread_attr_init(&(ft->attr));
   pthread_create(&(ft->thread), &(ft->attr), start_fuse_thread, ft);
