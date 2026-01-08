@@ -18,6 +18,18 @@
 #include <sys/wait.h>
 #include <pthread.h>
 
+// Platform-specific type definitions for macFUSE compatibility
+#ifdef __APPLE__
+  // macFUSE uses different types than Linux libfuse3
+  typedef struct stat fuse_stat_t;
+  typedef struct statfs fuse_statfs_t;
+  #define FUSE_FILL_DIR_T fuse_fill_dir_t
+#else
+  typedef struct stat fuse_stat_t;
+  typedef struct statvfs fuse_statfs_t;
+  #define FUSE_FILL_DIR_T fuse_fill_dir_t
+#endif
+
 static int IS_ARRAY_BUFFER_DETACH_SUPPORTED = 0;
 
 napi_status napi_detach_arraybuffer(napi_env env, napi_value buf);
@@ -168,7 +180,11 @@ typedef struct {
 
   // Stat + Statfs
   struct stat *stat;
+#ifdef __APPLE__
+  struct statfs *statfs_buf;
+#else
   struct statvfs *statvfs;
+#endif
 
   // Readdir
   fuse_fill_dir_t readdir_filler;
@@ -225,6 +241,23 @@ static void populate_stat (uint32_t *ints, struct stat* stat) {
 #endif
 }
 
+#ifdef __APPLE__
+static void populate_statfs (uint32_t *ints, struct statfs* st) {
+  st->f_bsize = *ints++;
+  *ints++; // skip frsize (not in macOS statfs)
+  st->f_blocks = *ints++;
+  st->f_bfree = *ints++;
+  st->f_bavail = *ints++;
+  st->f_files = *ints++;
+  st->f_ffree = *ints++;
+  *ints++; // skip favail (not in macOS statfs)
+  // f_fsid is a struct on macOS, just skip it
+  *ints++;
+  st->f_flags = *ints++;
+  // f_namemax doesn't exist in macOS statfs, skip
+  *ints++;
+}
+#else
 static void populate_statvfs (uint32_t *ints, struct statvfs* statvfs) {
   statvfs->f_bsize = *ints++;
   statvfs->f_frsize = *ints++;
@@ -238,9 +271,21 @@ static void populate_statvfs (uint32_t *ints, struct statvfs* statvfs) {
   statvfs->f_flag = *ints++;
   statvfs->f_namemax = *ints++;
 }
+#endif
 
 // Methods
 
+#ifdef __APPLE__
+FUSE_METHOD(statfs, 1, 1, (const char * path, struct statfs *statfs_buf), {
+  l->path = path;
+  l->statfs_buf = statfs_buf;
+}, {
+  napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
+}, {
+  NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
+  populate_statfs(ints, l->statfs_buf);
+})
+#else
 FUSE_METHOD(statfs, 1, 1, (const char * path, struct statvfs *statvfs), {
   l->path = path;
   l->statvfs = statvfs;
@@ -250,6 +295,7 @@ FUSE_METHOD(statfs, 1, 1, (const char * path, struct statvfs *statvfs), {
   NAPI_ARGV_BUFFER_CAST(uint32_t*, ints, 2)
   populate_statvfs(ints, l->statvfs);
 })
+#endif
 
 FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat, struct fuse_file_info *info), {
   l->path = path;
