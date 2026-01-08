@@ -874,11 +874,21 @@ NAPI_METHOD(fuse_native_mount) {
   // FUSE 3: ftruncate is merged into truncate (info param is non-NULL for fd-based)
   if (implemented[op_truncate] || implemented[op_ftruncate]) ops.truncate = fuse_native_truncate;
   // FUSE 3: fgetattr is merged into getattr (info param is non-NULL for fstat)
+#ifdef __APPLE__
+  // macFUSE uses different types, cast for compatibility
+  if (implemented[op_getattr] || implemented[op_fgetattr]) ops.getattr = (typeof(ops.getattr))fuse_native_getattr;
+#else
   if (implemented[op_getattr] || implemented[op_fgetattr]) ops.getattr = fuse_native_getattr;
+#endif
   if (implemented[op_flush]) ops.flush = fuse_native_flush;
   if (implemented[op_fsync]) ops.fsync = fuse_native_fsync;
   if (implemented[op_fsyncdir]) ops.fsyncdir = fuse_native_fsyncdir;
+#ifdef __APPLE__
+  // macFUSE uses fuse_darwin_fill_dir_t, cast for compatibility
+  if (implemented[op_readdir]) ops.readdir = (typeof(ops.readdir))fuse_native_readdir;
+#else
   if (implemented[op_readdir]) ops.readdir = fuse_native_readdir;
+#endif
   if (implemented[op_readlink]) ops.readlink = fuse_native_readlink;
   if (implemented[op_chown]) ops.chown = fuse_native_chown;
   if (implemented[op_chmod]) ops.chmod = fuse_native_chmod;
