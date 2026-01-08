@@ -1,4 +1,4 @@
-#define FUSE_USE_VERSION 29
+#define FUSE_USE_VERSION 35
 
 #include <uv.h>
 #include <node_api.h>
@@ -126,7 +126,6 @@ typedef struct {
   napi_ref handlers[35];
 
   struct fuse *fuse;
-  struct fuse_chan *ch;
   char mnt[1024];
   char mntopts[1024];
   int mounted;
@@ -252,9 +251,10 @@ FUSE_METHOD(statfs, 1, 1, (const char * path, struct statvfs *statvfs), {
   populate_statvfs(ints, l->statvfs);
 })
 
-FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat), {
+FUSE_METHOD(getattr, 1, 1, (const char *path, struct stat *stat, struct fuse_file_info *info), {
   l->path = path;
   l->stat = stat;
+  l->info = info;
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
 }, {
@@ -336,10 +336,11 @@ FUSE_METHOD(create, 2, 1, (const char *path, mode_t mode, struct fuse_file_info 
   }
 })
 
-FUSE_METHOD_VOID(utimens, 5, 0, (const char *path, const struct timespec tv[2]), {
+FUSE_METHOD_VOID(utimens, 5, 0, (const char *path, const struct timespec tv[2], struct fuse_file_info *info), {
   l->path = path;
   l->atime = timespec_to_uint64(&tv[0]);
   l->mtime = timespec_to_uint64(&tv[1]);
+  l->info = info;
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   FUSE_UINT64_TO_INTS_ARGV(l->atime, 3)
@@ -402,7 +403,8 @@ FUSE_METHOD(write, 6, 2, (const char *path, const char *buf, size_t len, off_t o
   if (IS_ARRAY_BUFFER_DETACH_SUPPORTED == 1) assert(napi_detach_arraybuffer(env, argv[3]) == napi_ok);
 })
 
-FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info), {
+FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info, enum fuse_readdir_flags flags), {
+  (void)flags; // Unused but required by FUSE 3 API
   l->buf = buf;
   l->path = path;
   l->offset = offset;
@@ -422,7 +424,7 @@ FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler,
   if (names_length != stats_length) {
     NAPI_FOR_EACH(raw_names, raw_name) {
       NAPI_UTF8(name, 1024, raw_name)
-      int err = l->readdir_filler((char *) l->buf, name, NULL, 0);
+      int err = l->readdir_filler((char *) l->buf, name, NULL, 0, 0);
       if (err == 1) {
         break;
       }
@@ -437,9 +439,8 @@ FUSE_METHOD(readdir, 1, 2, (const char *path, void *buf, fuse_fill_dir_t filler,
       struct stat st;
       populate_stat(stats_array, &st);
 
-      // TODO: It turns out readdirplus likely won't work with FUSE 29...
-      // Metadata caching between readdir/getattr will be enabled when we upgrade fuse-shared-library
-      int err = l->readdir_filler((char *) l->buf, name, (struct stat *) &st, 0);
+      // FUSE 3: filler has an extra flags parameter
+      int err = l->readdir_filler((char *) l->buf, name, (struct stat *) &st, 0, 0);
       if (err == 1) {
         break;
       }
@@ -575,9 +576,10 @@ FUSE_METHOD_VOID(fsyncdir, 3, 0, (const char *path, int datasync, struct fuse_fi
 })
 
 
-FUSE_METHOD_VOID(truncate, 3, 0, (const char *path, off_t size), {
+FUSE_METHOD_VOID(truncate, 3, 0, (const char *path, off_t size, struct fuse_file_info *info), {
   l->path = path;
   l->offset = size;
+  l->info = info;
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   FUSE_UINT64_TO_INTS_ARGV(l->offset, 3)
@@ -608,19 +610,21 @@ FUSE_METHOD(readlink, 1, 1, (const char *path, char *linkname, size_t len), {
   strncpy(l->linkname, linkname, l->len);
 })
 
-FUSE_METHOD_VOID(chown, 3, 0, (const char *path, uid_t uid, gid_t gid), {
+FUSE_METHOD_VOID(chown, 3, 0, (const char *path, uid_t uid, gid_t gid, struct fuse_file_info *info), {
   l->path = path;
   l->uid = uid;
   l->gid = gid;
+  l->info = info;
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   napi_create_uint32(env, l->uid, &(argv[3]));
   napi_create_uint32(env, l->gid, &(argv[4]));
 })
 
-FUSE_METHOD_VOID(chmod, 2, 0, (const char *path, mode_t mode), {
+FUSE_METHOD_VOID(chmod, 2, 0, (const char *path, mode_t mode, struct fuse_file_info *info), {
   l->path = path;
   l->mode = mode;
+  l->info = info;
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   napi_create_uint32(env, l->mode, &(argv[3]));
@@ -642,9 +646,10 @@ FUSE_METHOD_VOID(unlink, 1, 0, (const char *path), {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
 })
 
-FUSE_METHOD_VOID(rename, 2, 0, (const char *path, const char *dest), {
+FUSE_METHOD_VOID(rename, 2, 0, (const char *path, const char *dest, unsigned int flags), {
   l->path = path;
   l->dest = dest;
+  (void)flags; // Unused in JavaScript layer
 }, {
   napi_create_string_utf8(env, l->path, NAPI_AUTO_LENGTH, &(argv[2]));
   napi_create_string_utf8(env, l->dest, NAPI_AUTO_LENGTH, &(argv[3]));
@@ -700,7 +705,8 @@ NAPI_METHOD(fuse_native_signal_init) {
   return NULL;
 }
 
-static void * fuse_native_init (struct fuse_conn_info *conn) {
+static void * fuse_native_init (struct fuse_conn_info *conn, struct fuse_config *cfg) {
+  (void)cfg; // Unused but required by FUSE 3 API
   fuse_thread_locals_t *l = get_thread_locals();
 
   l->op = op_init;
@@ -781,10 +787,16 @@ static fuse_thread_locals_t* get_thread_locals () {
 
 static void* start_fuse_thread (void *data) {
   fuse_thread_t *ft = (fuse_thread_t *) data;
-  fuse_loop_mt(ft->fuse);
 
-  fuse_unmount(ft->mnt, ft->ch);
-  fuse_session_remove_chan(ft->ch);
+  // FUSE 3: fuse_loop_mt takes a config struct
+  struct fuse_loop_config config;
+  memset(&config, 0, sizeof(config));
+  config.clone_fd = 0;
+  config.max_idle_threads = 10;
+  fuse_loop_mt(ft->fuse, &config);
+
+  // FUSE 3: fuse_unmount takes just the fuse struct
+  fuse_unmount(ft->fuse);
   fuse_destroy(ft->fuse);
 
   return NULL;
@@ -813,10 +825,10 @@ NAPI_METHOD(fuse_native_mount) {
 
   struct fuse_operations ops = { };
   if (implemented[op_access]) ops.access = fuse_native_access;
-  if (implemented[op_truncate]) ops.truncate = fuse_native_truncate;
-  if (implemented[op_ftruncate]) ops.ftruncate = fuse_native_ftruncate;
-  if (implemented[op_getattr]) ops.getattr = fuse_native_getattr;
-  if (implemented[op_fgetattr]) ops.fgetattr = fuse_native_fgetattr;
+  // FUSE 3: ftruncate is merged into truncate (info param is non-NULL for fd-based)
+  if (implemented[op_truncate] || implemented[op_ftruncate]) ops.truncate = fuse_native_truncate;
+  // FUSE 3: fgetattr is merged into getattr (info param is non-NULL for fstat)
+  if (implemented[op_getattr] || implemented[op_fgetattr]) ops.getattr = fuse_native_getattr;
   if (implemented[op_flush]) ops.flush = fuse_native_flush;
   if (implemented[op_fsync]) ops.fsync = fuse_native_fsync;
   if (implemented[op_fsyncdir]) ops.fsyncdir = fuse_native_fsyncdir;
@@ -853,14 +865,21 @@ NAPI_METHOD(fuse_native_mount) {
   };
 
   struct fuse_args args = FUSE_ARGS_INIT(_argc, _argv);
-  struct fuse_chan *ch = fuse_mount(mnt, &args);
 
-  if (ch == NULL) {
-    napi_throw_error(env, "fuse failed", "fuse failed");
+  // FUSE 3: Create fuse first, then mount
+  struct fuse *fuse = fuse_new(&args, &ops, sizeof(struct fuse_operations), ft);
+
+  if (fuse == NULL) {
+    napi_throw_error(env, "fuse failed", "fuse_new failed");
     return NULL;
   }
 
-  struct fuse *fuse = fuse_new(ch, &args, &ops, sizeof(struct fuse_operations), ft);
+  // FUSE 3: fuse_mount now takes fuse struct and returns int
+  if (fuse_mount(fuse, mnt) != 0) {
+    fuse_destroy(fuse);
+    napi_throw_error(env, "fuse failed", "fuse_mount failed");
+    return NULL;
+  }
 
   uv_mutex_init(&(ft->mut));
   uv_sem_init(&(ft->sem), 0);
@@ -868,13 +887,14 @@ NAPI_METHOD(fuse_native_mount) {
   strncpy(ft->mnt, mnt, 1024);
   strncpy(ft->mntopts, mntopts, 1024);
   ft->fuse = fuse;
-  ft->ch = ch;
   ft->mounted++;
 
   int err = uv_async_init(uv_default_loop(), &(ft->async), (uv_async_cb) fuse_native_async_init);
 
-  if (fuse == NULL || err < 0) {
-    napi_throw_error(env, "fuse failed", "fuse failed");
+  if (err < 0) {
+    fuse_unmount(fuse);
+    fuse_destroy(fuse);
+    napi_throw_error(env, "fuse failed", "uv_async_init failed");
     return NULL;
   }
 

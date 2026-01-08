@@ -4,11 +4,44 @@ FUSE bindings for Node JS.
 
 This is a fork of https://www.npmjs.com/package/fuse-native that does
 NOT ship libfuse, and instead depends on it being installed on the user's
-computer. It also only supports Linux.
+computer. It supports both Linux and macOS.
 
 URL: https://github.com/sagemathinc/fuse-native
 
 Upstream: [https://github.com/fuse\-friends/fuse\-native](https://github.com/fuse-friends/fuse-native), but upstream is [no longer maintained](https://github.com/fuse-friends/fuse-native/issues/36).  However, [this fork](https://github.com/zkochan/fuse-native) might be the most maintained?
+
+## Prerequisites
+
+This library requires libfuse3 to be installed on your system.
+
+### Linux
+
+Install libfuse3 development files:
+
+```sh
+# Debian/Ubuntu
+sudo apt-get install libfuse3-dev fuse3
+
+# Fedora/RHEL
+sudo dnf install fuse3-devel fuse3
+
+# Arch Linux
+sudo pacman -S fuse3
+```
+
+### macOS
+
+Install macFUSE 4.10+ (which includes libfuse3 support):
+
+1. Download and install [macFUSE](https://osxfuse.github.io/) version 4.10 or later
+2. macFUSE 5.x is recommended for best compatibility
+
+Alternatively, using Homebrew:
+```sh
+brew install macfuse
+```
+
+**Note:** You may need to allow the macFUSE kernel extension in System Preferences > Security & Privacy after installation.
 
 ### TESTING
 
@@ -16,14 +49,16 @@ Upstream: [https://github.com/fuse\-friends/fuse\-native](https://github.com/fus
 pnpm test
 ```
 
-- On ARM64 linux, at least, 3 of the tests fail.
-- On x86\-64 linux, all the tests pass
+- On x86\-64 Linux, all the tests pass
+- On ARM64 Linux, at least 3 of the tests fail
+- On macOS with macFUSE 4.10+/5.x, tests should pass (requires libfuse3)
 
 ### Other Notes
 
 - Upstream seems dead \-\- [https://github.com/fuse\-friends/fuse\-native/issues/36](https://github.com/fuse-friends/fuse-native/issues/36) 
 - On ARM64 linux upstream doesn't install, due to the shared library binary that they ship, which is wrong.  That's the reason I removed all use of shipping shared libraries in an npm module, which is really the wrong way to do things, obviously.
 - I added the `nonEmpty` option, which wasn't in upstream.
+- **FUSE 3 Migration**: This fork has been updated to use FUSE 3 API (FUSE\_USE\_VERSION=35) for compatibility with modern FUSE implementations including macFUSE 4.10+ and libfuse3 on Linux.
 
 ## API
 
@@ -301,5 +336,7 @@ Called when a directory is being removed
 MIT for these bindings.
 
 See the [libfuse](https://github.com/libfuse/libfuse) license for Linux/BSD
-for the FUSE shared library license, which is LGPL
+for the FUSE shared library license, which is LGPL.
+
+For macOS, see the [macFUSE license](https://github.com/osxfuse/osxfuse/blob/master/LICENSE).
 
